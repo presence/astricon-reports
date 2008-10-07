@@ -1,5 +1,5 @@
-username: my_username
-password: my_password
+username: uname
+password: passwd
 yaml_fn: astricon2008_leads.yml
 excel_fn: astricon2008_leads.csv
 wsdl_url: http://crm.presenceco.com/sugar/soap.php?wsdl

@@ -1,12 +1,23 @@
+#!/usr/bin/env ruby
+
 #Require the library for SOAP
-require 'rubygems'
-require 'yaml'
-require 'soap/wsdlDriver'
-require 'digest/md5'
-require 'fastercsv'
+require 'lib/libs.rb'
+require 'pp'
 
 #Load our configuration file
 $config = YAML.load_file("config.yml")
+
+#First lets set the name of the quarter we are in
+case Time.now.at_beginning_of_quarter.month
+  when 1
+    this_quarter = "Q1"
+  when 4
+    this_quarter = "Q2"
+  when 7
+    this_quarter = "Q3"
+  when 10
+    this_quarter = "Q4"
+end
 
 #Build an output array containing the hashes of each record returned by the SOAP web service of Sugar CRM
 def collect_output results
@@ -26,6 +37,7 @@ credentials = { "user_name" => $config["username"], "password" => Digest::MD5.he
 begin
   #Connect to the Sugar CRM WSDL and build our methods in Ruby
   ws_proxy = SOAP::WSDLDriverFactory.new($config["wsdl_url"]).create_rpc_driver
+  ws_proxy.streamhandler.client.receive_timeout = 3600
   
   #This may be toggled on to log XML requests/responses for debugging
   #ws_proxy.wiredump_file_base = "soap"
@@ -65,23 +77,69 @@ end
 #Organize the results into a nice array of hashes to be output into our reports
 leads = collect_output(results)
 
-#Create a YAML file so we may see all of the data, make sure there is nothing else folks want
-File.open($config["yaml_fn"], 'w') {|f| f.write(leads.to_yaml)}
+#Hash to track the totals of the forecast
+totals = { "new" => 0,
+           "assigned" => 0,
+           "converted" => 0,
+           "dead" => 0,
+           "partner" => 0,
+           "end-user" => 0,
+           "total" => 0 }
 
-#Create a CSV file with a subset of details that may be opened in Excel
-fh = File.open($config["excel_fn"], 'w')
-#Write row headers for the Leads worksheet
-fh.write("Account Name,First Name,Last Name,Assigned To,Country,Status,Description")
-fh.write("\n")
-#Write rows for the Leads CSV file
+#Now lets qualify which leads we should be using in the forecast
+astricon_report_table = Table(%w[AccountName Name Owner LeadState Description Status])
+#Create totals table
+totals_report_table = Table(%w[New Assigned Converted Dead Total])
+#Create types table
+types_report_table = Table(%w[Partner End-User Undetermined Total])
+
 leads.each do |lead|
-  row = lead["account_name"].gsub(",", "") + "," +
-        lead["first_name"] + "," +
-        lead["last_name"] + "," +
-        lead["assigned_user_name"]  + "," +
-        lead["primary_address_country"] + "," +
-        lead["status"] + "," +
-        lead["description"].gsub(",", "").gsub("\n", "") + "\n"
-  fh.write(row)
+  astricon_report_table << [ lead["account_name"],
+                             lead["first_name"] + " " + lead["last_name"],
+                             lead["assigned_user_name"],
+                             lead["status"],
+                             lead["description"],
+                             lead["status_description"] ]
+  case lead["status"]
+    when "New"
+      totals["new"] += 1
+    when "Assigned"
+      totals["assigned"] += 1
+    when "Converted"
+      totals["converted"] += 1
+    when "Dead"
+      totals["dead"] += 1
+  end
+  if lead["description"][0,7] == "Partner"
+    totals["partner"] += 1
+  end
+  if lead["description"][0,8] == "End-user"
+    totals["end-user"] += 1
+  end
+  totals["total"] += 1
 end
-fh.close
+
+totals_report_table << [ totals["new"],
+                         totals["assigned"],
+                         totals["converted"],
+                         totals["dead"],
+                         totals["total"] ]
+
+types_report_table << [ totals["partner"],
+                        totals["end-user"],
+                        totals["total"] - (totals["partner"] + totals["end-user"]),
+                        totals["total"] ]
+                                                  
+pdf_filename = "tmp/Astricon2008_" + Time.now.to_s.gsub(" ", "-") + ".pdf"
+TableRenderer.render_pdf( :file => pdf_filename,
+                          :report_title => "Astricon 2008 Lead Report",
+                          :sales_quarter => this_quarter + "FY" + Time.now.year.to_s,
+                          :data => [ astricon_report_table, totals_report_table, types_report_table ] )
+                          
+#Generate CSV file
+csv_filename = "tmp/Astricon2008_" + Time.now.to_s.gsub(" ", "-") + ".csv"
+File.open(csv_filename, "w") do |outfile|
+  outfile.puts astricon_report_table.to_csv
+end
+                          
+puts "Completed"
